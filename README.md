@@ -38,3 +38,10 @@ On the other hand, suppose we know that white **always plays the system**:
 In that case, `1... d6` is in fact a **very** strong move, because if we enumerate all possible sequences we find that the best outcome for the wildcard player (black) is:
 
 `1. Nf3 d6 2. Ne5 dxe5!`
+
+Suppose we set `num_solutions: int = 3` then I would assume that top solutions would include:
+`1. Nf3 d6 2. Ne5 dxe5`
+`1. Nf3 f6 2. Ne5 fxe5`
+`1. Nf3 Nc6 2. Ne5 Nxe5`
+
+(I could be wrong - I have written this example before writing the code, so this is just my guesses at likely solutions).
