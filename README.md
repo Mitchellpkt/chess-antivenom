@@ -23,8 +23,11 @@ SPECIFICALLY we want the optimal evaluations for the wildcard player **at the en
 For contrast, suppose what we are in a scenario with **unconstrained** play, and black is the wildcard player.
 
 If white plays `1. Nf3`, and we do NOT know what they will do next, then reasonable moves for black are the usual:
+
 `1... Nf6`
+
 `1... d5`
+
 `1... e6`
 
 In the unconstrained setting, `1... d6` is not a particularly strong move for black in response to the Zuckertort.
@@ -40,8 +43,11 @@ In that case, `1... d6` is in fact a **very** strong move, because if we enumera
 `1. Nf3 d6 2. Ne5 dxe5!`
 
 Suppose we set `num_solutions: int = 3` then I would assume that top solutions would include:
+
 `1. Nf3 d6 2. Ne5 dxe5`
+
 `1. Nf3 f6 2. Ne5 fxe5`
+
 `1. Nf3 Nc6 2. Ne5 Nxe5`
 
 (I could be wrong - I have written this example before writing the code, so this is just my guesses at likely solutions).
