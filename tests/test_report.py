@@ -290,6 +290,18 @@ class TestInteractiveViewer:
         assert html.count('class="viewer"') == 1
 
 
+class TestHeaderExtras:
+    def test_favicon_data_uri_present(self):
+        html = json_to_html(data=_make_fixture_data())
+        # Inline SVG favicon via data: URI — no external file.
+        assert '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,' in html
+
+    def test_byline_present_and_links_to_repo(self):
+        html = json_to_html(data=_make_fixture_data())
+        assert "Antivenom Analysis (MitchellPKT)" in html
+        assert 'href="https://github.com/mitchellpkt/chess-antivenom"' in html
+
+
 class TestWhiteWildcardPlayer:
     """Sanity check: when the WP is white, line[0] is their first move and
     the report should orient itself accordingly."""

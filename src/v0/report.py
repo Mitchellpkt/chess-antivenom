@@ -12,6 +12,7 @@ schema and assert on the returned string.
 
 from __future__ import annotations
 
+import base64
 import statistics
 from collections import defaultdict
 from html import escape
@@ -20,6 +21,22 @@ from urllib.parse import quote
 
 import chess
 import chess.svg
+
+
+# Tiny chess-knight favicon, embedded as a data URI so the report stays
+# self-contained. Cream knight on a warm-brown rounded square — same palette
+# as the rest of the report.
+_FAVICON_SVG: bytes = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+    b'<rect width="100" height="100" rx="16" fill="#8d6e63"/>'
+    b'<text x="50" y="78" font-size="78" text-anchor="middle" '
+    b'fill="#f5ede0" font-family="Georgia, serif">'
+    b'\xe2\x99\x9e</text>'  # U+265E BLACK CHESS KNIGHT
+    b'</svg>'
+)
+_FAVICON_DATA_URI: str = (
+    "data:image/svg+xml;base64," + base64.b64encode(_FAVICON_SVG).decode("ascii")
+)
 
 
 # Tan / brown palette. Cream background, warm browns for text and chrome.
@@ -60,6 +77,20 @@ header.report-header {
   box-shadow: 0 2px 6px var(--shadow);
   margin-bottom: 24px;
 }
+header.report-header .byline {
+  font-size: 11px;
+  opacity: 0.78;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 0 0 10px;
+  font-weight: 500;
+}
+header.report-header .byline a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(253, 246, 233, 0.4);
+}
+header.report-header .byline a:hover { border-bottom-color: rgba(253, 246, 233, 0.9); }
 header.report-header h1 {
   margin: 0 0 6px;
   font-size: 22px;
@@ -465,7 +496,8 @@ def _header(*, meta: dict[str, Any], stats: dict[str, Any]) -> str:
 
     return f"""
 <header class="report-header">
-  <h1>Antivenom Report — {escape(tag)}</h1>
+  <div class="byline"><a href="https://github.com/mitchellpkt/chess-antivenom" target="_blank" rel="noopener">Antivenom Analysis (MitchellPKT)</a></div>
+  <h1>Antivenom Report: {escape(tag)}</h1>
   <div class="subtitle">Spec: {escape(spec)}&nbsp;&nbsp;·&nbsp;&nbsp;Wildcard player: <strong>{escape(wp)}</strong></div>
   <div class="quickstats">
     <span><strong>{total}</strong>leaves evaluated</span>
@@ -929,12 +961,13 @@ def json_to_html(*, data: dict[str, Any], top_n_with_boards: int = 5) -> str:
         _all_solutions_card(results=results, wildcard_player=wildcard_player, top_n=top_n_with_boards),
     ]
     body: str = "\n".join(sections)
-    title: str = f"Antivenom Report — {escape(meta.get('experiment_tag', 'untitled'))}"
+    title: str = f"Antivenom Report: {escape(meta.get('experiment_tag', 'untitled'))}"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>{title}</title>
+<link rel="icon" type="image/svg+xml" href="{_FAVICON_DATA_URI}">
 <style>{_CSS}</style>
 </head>
 <body>

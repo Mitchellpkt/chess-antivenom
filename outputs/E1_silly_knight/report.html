@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Antivenom Report — E1_silly_knight</title>
+<title>Antivenom Report: E1_silly_knight</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgcng9IjE2IiBmaWxsPSIjOGQ2ZTYzIi8+PHRleHQgeD0iNTAiIHk9Ijc4IiBmb250LXNpemU9Ijc4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjZjVlZGUwIiBmb250LWZhbWlseT0iR2VvcmdpYSwgc2VyaWYiPuKZnjwvdGV4dD48L3N2Zz4=">
 <style>
 :root {
   --bg: #f5ede0;
@@ -40,6 +41,20 @@ header.report-header {
   box-shadow: 0 2px 6px var(--shadow);
   margin-bottom: 24px;
 }
+header.report-header .byline {
+  font-size: 11px;
+  opacity: 0.78;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 0 0 10px;
+  font-weight: 500;
+}
+header.report-header .byline a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(253, 246, 233, 0.4);
+}
+header.report-header .byline a:hover { border-bottom-color: rgba(253, 246, 233, 0.9); }
 header.report-header h1 {
   margin: 0 0 6px;
   font-size: 22px;
@@ -228,7 +243,8 @@ pre.raw {
 <main>
 
 <header class="report-header">
-  <h1>Antivenom Report — E1_silly_knight</h1>
+  <div class="byline"><a href="https://github.com/mitchellpkt/chess-antivenom" target="_blank" rel="noopener">Antivenom Analysis (MitchellPKT)</a></div>
+  <h1>Antivenom Report: E1_silly_knight</h1>
   <div class="subtitle">Spec: 1. Nf3 __ 2. Ne5 __&nbsp;&nbsp;·&nbsp;&nbsp;Wildcard player: <strong>black</strong></div>
   <div class="quickstats">
     <span><strong>423</strong>leaves evaluated</span>
