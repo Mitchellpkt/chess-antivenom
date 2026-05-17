@@ -211,3 +211,98 @@ class TestEdgeCases:
         assert tree.line_count > 0
         lines = tree.flatten()
         assert all(len(line) == 3 for line in lines)
+
+
+class TestIterLeaves:
+    """Tests for iter_leaves() — yields (line, fen) for every leaf."""
+
+    def test_iter_leaves_returns_line_and_fen(self):
+        """Each yielded item should be a (line tuple, fen string) pair."""
+        tree = expand_wildcards("1. e4 e5")
+
+        leaves = list(tree.iter_leaves())
+        assert len(leaves) == 1
+        line, fen = leaves[0]
+        assert line == ("e4", "e5")
+        # FEN after 1. e4 e5 — white to move
+        assert "w" in fen.split()[1]
+
+    def test_iter_leaves_count_matches_line_count(self):
+        """iter_leaves should yield exactly tree.line_count items."""
+        tree = expand_wildcards("1. e4 __ 2. Nf3")
+
+        leaves = list(tree.iter_leaves())
+        assert len(leaves) == tree.line_count
+
+    def test_iter_leaves_fens_are_unique_per_distinct_line(self):
+        """Different lines should produce different FENs."""
+        tree = expand_wildcards("1. e4 __")
+
+        leaves = list(tree.iter_leaves())
+        fens = [fen for _, fen in leaves]
+        assert len(set(fens)) == len(fens)
+
+    def test_iter_leaves_empty_input(self):
+        """Empty input should yield one leaf at the starting position."""
+        tree = expand_wildcards("")
+
+        leaves = list(tree.iter_leaves())
+        assert len(leaves) == 1
+        line, fen = leaves[0]
+        assert line == ()
+        assert fen == chess.STARTING_FEN
+
+
+class TestTerminalPruning:
+    """Tree expansion must stop at game-over positions."""
+
+    def test_fool_mate_truncates_branch_at_mate(self):
+        """For spec '1. g4 __ 2. f3 __ 3. Nc3 __', the 1...e5 2.f3 Qh4# branch
+        is checkmate at ply 4 — the tree must not try to apply the remaining
+        '3. Nc3 __' on a finished position. The mate leaf should appear with
+        line length 4 (not 6).
+        """
+        tree = expand_wildcards("1. g4 __ 2. f3 __ 3. Nc3 __")
+        leaves = list(tree.iter_leaves())
+
+        mate_line = ("g4", "e5", "f3", "Qh4#")
+        mate_leaves = [(line, fen) for line, fen in leaves if line == mate_line]
+        assert len(mate_leaves) == 1, (
+            f"Expected exactly one leaf matching {mate_line}, got {len(mate_leaves)}"
+        )
+        _, mate_fen = mate_leaves[0]
+        board = chess.Board(mate_fen)
+        assert board.is_checkmate()
+        assert board.turn == chess.WHITE  # white is the mated side
+
+    def test_non_mate_branches_complete_full_sequence(self):
+        """Branches that don't trigger mate should still go all 6 plies deep."""
+        tree = expand_wildcards("1. g4 __ 2. f3 __ 3. Nc3 __")
+        leaves = list(tree.iter_leaves())
+
+        # Plenty of length-6 leaves should exist (sequences that didn't mate early).
+        full_length = [line for line, _ in leaves if len(line) == 6]
+        assert len(full_length) > 100
+
+
+class TestSilentIllegalSkip:
+    """When a system move is illegal in some wildcard subtree, that subtree
+    is silently dropped — not raised."""
+
+    def test_illegal_under_wildcard_prunes_branch(self):
+        """Spec '1. e4 __ 2. e5' makes white's e5 illegal whenever black plays
+        e5 themselves (white's pawn is blocked). That one branch should be
+        absent from the leaves; the other ~19 should be present at length 3.
+        """
+        tree = expand_wildcards("1. e4 __ 2. e5")
+        leaves = list(tree.iter_leaves())
+
+        # The (e4, e5, e5) branch must be absent (black's e5 blocks white's e5).
+        assert all(line != ("e4", "e5", "e5") for line, _ in leaves)
+
+        # Surviving branches should have the full 3-ply sequence.
+        assert all(len(line) == 3 for line, _ in leaves)
+        assert all(line[0] == "e4" and line[2] == "e5" for line, _ in leaves)
+
+        # We should still have ~19 of the original 20 black responses.
+        assert 15 <= len(leaves) <= 19

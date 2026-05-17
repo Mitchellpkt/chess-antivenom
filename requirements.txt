@@ -1,2 +1,4 @@
 chess>=1.10.0
 loguru
+tqdm
+pydantic>=2.0

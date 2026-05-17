@@ -6,7 +6,6 @@ import chess
 from src.v0.chess_tools.evaluation import (
     evaluate_position,
     evaluate_fen,
-    evaluate_pgn,
     find_stockfish,
     EvaluationResult,
     MultiPVResult,
@@ -187,44 +186,6 @@ class TestEvaluateFen:
         result = evaluate_fen(fen, depth=10)
 
         assert isinstance(result, EvaluationResult)
-
-
-class TestEvaluatePgn:
-    """Tests for PGN evaluation."""
-
-    def test_evaluate_pgn_bare_moves(self):
-        """Should evaluate bare move sequences."""
-        result = evaluate_pgn("1. e4 e5", depth=8)
-
-        assert isinstance(result, EvaluationResult)
-        assert result.best_move != ""
-
-    def test_evaluate_pgn_full_pgn(self):
-        """Should evaluate full PGN with headers."""
-        pgn = """[Event "Test"]
-[Result "*"]
-
-1. e4 e5 2. Nf3 Nc6 *"""
-        result = evaluate_pgn(pgn, depth=8)
-
-        assert isinstance(result, EvaluationResult)
-
-    def test_evaluate_pgn_returns_final_position_eval(self):
-        """Should evaluate the final position, not intermediate ones.
-
-        Position after 1. h4 e5 2. a3: White has made two useless pawn moves
-        (h4 and a3) while Black played the strong central move e5.
-        Black should have a clear advantage (~1 pawn) due to superior
-        central control and development potential.
-        """
-        # After 1. h4 e5 2. a3 - White has wasted two tempi
-        result = evaluate_pgn("1. h4 e5 2.a3", depth=12)
-        expected_result: int = -113
-        tolerance: float = 2.5
-
-        # White should have a significant advantage
-        assert result.centipawns is not None
-        assert abs(result.centipawns - expected_result) < tolerance
 
 
 class TestEngineConfiguration:

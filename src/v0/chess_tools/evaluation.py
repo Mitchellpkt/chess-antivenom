@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING
 import chess
 import chess.engine
 
-from .moves import _parse_pgn_to_board
-
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -52,14 +50,28 @@ class EvaluationResult:
     depth: int
     """Search depth reached."""
 
+    terminal: str | None = None
+    """
+    Set when the evaluated position is already game-over (no engine call needed).
+    One of: 'white_wins', 'black_wins', 'draw_stalemate', 'draw_insufficient_material',
+    'draw_seventyfive_moves', 'draw_fivefold_repetition', 'draw_other'. None otherwise.
+    """
+
     @property
     def is_mate(self) -> bool:
         """Whether the evaluation is a forced mate."""
         return self.mate_in is not None
 
     @property
+    def is_terminal(self) -> bool:
+        """Whether the position is already a finished game (checkmate, stalemate, draw)."""
+        return self.terminal is not None
+
+    @property
     def evaluation_str(self) -> str:
         """Human-readable evaluation string."""
+        if self.terminal is not None:
+            return self.terminal
         if self.mate_in is not None:
             return f"M{self.mate_in}"
         elif self.centipawns is not None:
@@ -189,44 +201,6 @@ def evaluate_fen(
         'e5'
     """
     board = chess.Board(fen)
-    return evaluate_position(
-        board,
-        depth=depth,
-        stockfish_path=stockfish_path,
-        threads=threads,
-        hash_mb=hash_mb,
-        multipv=multipv,
-    )
-
-
-def evaluate_pgn(
-    pgn: str,
-    *,
-    depth: int = 20,
-    stockfish_path: str | None = None,
-    threads: int = 1,
-    hash_mb: int = 256,
-    multipv: int = 1,
-) -> EvaluationResult | MultiPVResult:
-    """
-    Evaluate the final position of a PGN game.
-
-    Args:
-        pgn: PGN string (full PGN or bare move sequence).
-        depth: Search depth.
-        stockfish_path: Path to Stockfish binary.
-        threads: Number of CPU threads.
-        hash_mb: Hash table size in MB.
-        multipv: Number of principal variations.
-
-    Returns:
-        EvaluationResult if multipv=1, MultiPVResult if multipv>1.
-
-    Example:
-        >>> result = evaluate_pgn("1. e4 e5 2. Nf3 Nc6 3. Bb5")
-        >>> print(f"Ruy Lopez eval: {result.evaluation_str}")
-    """
-    board = _parse_pgn_to_board(pgn)
     return evaluate_position(
         board,
         depth=depth,

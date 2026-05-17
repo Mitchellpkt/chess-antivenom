@@ -51,3 +51,25 @@ Suppose we set `num_solutions: int = 3` then I would assume that top solutions w
 `1. Nf3 Nc6 2. Ne5 Nxe5`
 
 (I could be wrong - I have written this example before writing the code, so this is just my guesses at likely solutions).
+
+## Setup
+
+Python deps:
+```
+pip install -r requirements.txt
+```
+
+Stockfish (the chess engine) is needed at runtime but isn't a pip package — install via your OS package manager:
+```
+sudo apt install stockfish        # Debian / Ubuntu
+brew install stockfish            # macOS
+```
+Or grab a binary from https://stockfishchess.org/download/ and put it on your `PATH`. The code auto-detects it from `PATH` and the common install paths (`/usr/games/stockfish`, `/usr/bin/stockfish`, `/opt/homebrew/bin/stockfish`); you can also pass an explicit path via `config_engine_path` in `experiments/E1.py`.
+
+## Running
+
+```
+python experiments/E1.py
+```
+
+Edit the config block at the top of `E1.py` to point at a different input file, change Stockfish depth/threads/hash, or adjust how many top solutions get printed. The full ranked list is always written to JSON; the top N is also logged to the console.
