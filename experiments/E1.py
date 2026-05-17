@@ -6,6 +6,9 @@ from loguru import logger
 config_experiment_tag: str = "E1_silly_knight"
 config_input_path: Path = Path.cwd() / "inputs" / "format_0" / "silly_knight_moves.pgn"
 config_output_path: Path = Path.cwd() / "outputs" / "E1" / "silly_knight_moves.json"
+config_num_solutions: int = 3
+config_engine_depth: int | None = 20
+
 
 # -----------------------------------------------------------------------
 # Everything below this line should be automatic
