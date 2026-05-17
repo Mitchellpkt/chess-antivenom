@@ -181,6 +181,140 @@ pre.raw {
   overflow-x: auto;
   margin: 0;
 }
+
+/* Interactive viewer (one per top-N solution). */
+.viewer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.viewer-boards {
+  position: relative;
+  background: #fdf6e9;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px;
+}
+.viewer-ply { display: none; line-height: 0; }
+.viewer-ply.is-current { display: block; }
+.viewer-boards svg { display: block; }
+.viewer-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.viewer-controls button {
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 3px;
+  font-family: inherit;
+}
+.viewer-controls button:hover { background: var(--gold); }
+.viewer-controls button:disabled { opacity: 0.4; cursor: not-allowed; background: var(--card-alt); }
+.viewer-ply-counter { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text-soft); min-width: 70px; text-align: center; }
+.viewer-moves {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: baseline;
+  max-width: 320px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.viewer-moves .move-num { color: var(--text-soft); margin-right: 1px; margin-left: 4px; }
+.viewer-moves .move-num:first-child { margin-left: 0; }
+.viewer-moves .move-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  padding: 1px 5px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 3px;
+  font-family: inherit;
+}
+.viewer-moves .move-btn:hover { background: var(--card-alt); border-color: var(--border); }
+.viewer-moves .move-btn.is-current {
+  background: var(--gold);
+  color: #4a2f10;
+  border-color: var(--gold-strong);
+  font-weight: 600;
+}
+.viewer-hint { font-size: 11px; color: var(--text-soft); font-style: italic; }
+"""
+
+
+_VIEWER_JS: str = r"""
+(function () {
+  function setPly(viewer, ply) {
+    var total = parseInt(viewer.dataset.totalPlies, 10);
+    if (ply < 0) ply = 0;
+    if (ply > total - 1) ply = total - 1;
+    viewer.dataset.currentPly = String(ply);
+    var plies = viewer.querySelectorAll('.viewer-ply');
+    for (var i = 0; i < plies.length; i++) {
+      var pi = parseInt(plies[i].dataset.ply, 10);
+      plies[i].classList.toggle('is-current', pi === ply);
+    }
+    var moves = viewer.querySelectorAll('.move-btn');
+    for (var j = 0; j < moves.length; j++) {
+      // move-btn at index k corresponds to ply k+1 (ply 0 has no move).
+      var mp = parseInt(moves[j].dataset.ply, 10);
+      moves[j].classList.toggle('is-current', mp === ply);
+    }
+    var counter = viewer.querySelector('.viewer-ply-counter');
+    if (counter) counter.textContent = ply + ' / ' + (total - 1);
+    var prevBtn = viewer.querySelector('[data-action="prev"]');
+    var startBtn = viewer.querySelector('[data-action="start"]');
+    var nextBtn = viewer.querySelector('[data-action="next"]');
+    var endBtn = viewer.querySelector('[data-action="end"]');
+    if (prevBtn) prevBtn.disabled = ply === 0;
+    if (startBtn) startBtn.disabled = ply === 0;
+    if (nextBtn) nextBtn.disabled = ply === total - 1;
+    if (endBtn) endBtn.disabled = ply === total - 1;
+  }
+
+  function step(viewer, delta) {
+    setPly(viewer, parseInt(viewer.dataset.currentPly, 10) + delta);
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('button');
+    if (!t) return;
+    var viewer = t.closest('.viewer');
+    if (!viewer) return;
+    var action = t.dataset.action;
+    if (action === 'start') setPly(viewer, 0);
+    else if (action === 'prev') step(viewer, -1);
+    else if (action === 'next') step(viewer, 1);
+    else if (action === 'end') setPly(viewer, parseInt(viewer.dataset.totalPlies, 10) - 1);
+    else if (t.classList.contains('move-btn')) {
+      setPly(viewer, parseInt(t.dataset.ply, 10));
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    var viewer = null;
+    var active = document.activeElement;
+    if (active) viewer = active.closest('.viewer');
+    if (!viewer) {
+      var open = document.querySelectorAll('details[open] .viewer');
+      if (open.length) viewer = open[0];
+    }
+    if (!viewer) return;
+    if (e.key === 'ArrowLeft') { step(viewer, -1); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { step(viewer, 1); e.preventDefault(); }
+    else if (e.key === 'Home') { setPly(viewer, 0); e.preventDefault(); }
+    else if (e.key === 'End') { setPly(viewer, parseInt(viewer.dataset.totalPlies, 10) - 1); e.preventDefault(); }
+  });
+
+  // Initialise each viewer to its starting ply (the value rendered in data-current-ply).
+  document.querySelectorAll('.viewer').forEach(function (v) {
+    setPly(v, parseInt(v.dataset.currentPly, 10));
+  });
+})();
 """
 
 
@@ -534,14 +668,108 @@ def _per_first_move_card(*, results: list[dict[str, Any]], wildcard_player: str)
 """
 
 
+def _replay_line_to_svgs(
+    *,
+    line: list[str],
+    wildcard_player: str,
+    size: int,
+) -> list[str]:
+    """Replay a SAN line and return one chess.svg board per ply.
+
+    Returns ``len(line) + 1`` SVG strings: index 0 is the starting position,
+    index k is the position after the k-th ply has been played. Each SVG
+    after the first includes an arrow for the move that led there, and a
+    check highlight when the side to move is in check (which is also true
+    for checkmate).
+    """
+    flipped: bool = wildcard_player == "black"
+    board: chess.Board = chess.Board()
+    svgs: list[str] = [
+        chess.svg.board(board=board, size=size, flipped=flipped)
+    ]
+    for san in line:
+        move: chess.Move = board.parse_san(san)
+        board.push(move)
+        check_sq: int | None = board.king(board.turn) if board.is_check() else None
+        svgs.append(
+            chess.svg.board(
+                board=board,
+                size=size,
+                flipped=flipped,
+                lastmove=move,
+                check=check_sq,
+            )
+        )
+    return svgs
+
+
+def _interactive_viewer_html(
+    *,
+    viewer_id: str,
+    line: list[str],
+    wildcard_player: str,
+    size: int = 280,
+) -> str:
+    """Build the HTML for one interactive board viewer.
+
+    All per-ply SVGs are pre-rendered server-side and emitted as hidden divs;
+    the JS controller in ``_VIEWER_JS`` toggles which one is visible. The
+    viewer defaults to the final ply (matches the static-board behaviour and
+    is the position the eval refers to).
+    """
+    svgs: list[str] = _replay_line_to_svgs(
+        line=line, wildcard_player=wildcard_player, size=size
+    )
+    total_plies: int = len(svgs)
+    default_ply: int = total_plies - 1
+
+    ply_divs: list[str] = []
+    for i, svg in enumerate(svgs):
+        cls: str = "viewer-ply is-current" if i == default_ply else "viewer-ply"
+        ply_divs.append(f'<div class="{cls}" data-ply="{i}">{svg}</div>')
+
+    # Move list — interleave move numbers with clickable move buttons.
+    move_items: list[str] = []
+    for i, san in enumerate(line):
+        if i % 2 == 0:
+            move_items.append(f'<span class="move-num">{i // 2 + 1}.</span>')
+        ply_idx: int = i + 1  # ply 0 is the start; the move at index i lands at ply i+1.
+        move_items.append(
+            f'<button class="move-btn" type="button" data-ply="{ply_idx}">{escape(san)}</button>'
+        )
+    move_list: str = "".join(move_items) if move_items else '<span class="viewer-hint">no moves</span>'
+
+    return f"""
+<div class="viewer" id="{viewer_id}" data-total-plies="{total_plies}" data-current-ply="{default_ply}" tabindex="0">
+  <div class="viewer-boards">{''.join(ply_divs)}</div>
+  <div class="viewer-controls">
+    <button type="button" data-action="start" aria-label="First ply">|◀</button>
+    <button type="button" data-action="prev" aria-label="Previous ply">◀</button>
+    <span class="viewer-ply-counter">{default_ply} / {default_ply}</span>
+    <button type="button" data-action="next" aria-label="Next ply">▶</button>
+    <button type="button" data-action="end" aria-label="Last ply">▶|</button>
+  </div>
+  <div class="viewer-moves">{move_list}</div>
+  <p class="viewer-hint">click a move or use ← → ↖ ↘ (Home/End) when focused</p>
+</div>
+"""
+
+
 def _solution_block(
     *,
     r: dict[str, Any],
     wildcard_player: str,
     is_top: bool,
     include_svg: bool,
+    interactive: bool = False,
 ) -> str:
-    """Render one solution. Top solutions get an inline board diagram."""
+    """Render one solution.
+
+    When ``interactive`` is True the static SVG is replaced with a full
+    per-ply viewer (move list + nav buttons). When ``include_svg`` is True
+    but ``interactive`` is False, a single static SVG of the leaf position
+    is shown. When both are False, only text / FEN / lichess link.
+    """
     rank: int = r["rank"]
     line: list[str] = r["line"]
     fen: str = r["fen"]
@@ -574,18 +802,24 @@ def _solution_block(
         f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in extra_rows
     )
 
-    svg_html: str = ""
-    if include_svg:
+    board_html: str = ""
+    if interactive:
+        viewer_id: str = f"viewer-{rank}"
+        board_html = _interactive_viewer_html(
+            viewer_id=viewer_id,
+            line=line,
+            wildcard_player=wildcard_player,
+        )
+    elif include_svg:
         board: chess.Board = chess.Board(fen)
         flipped: bool = wildcard_player == "black"
-        check_sq: int | None = board.king(board.turn) if board.is_check() or board.is_checkmate() else None
-        svg: str = chess.svg.board(
+        check_sq: int | None = board.king(board.turn) if board.is_check() else None
+        board_html = chess.svg.board(
             board=board,
             size=240,
             flipped=flipped,
             check=check_sq,
         )
-        svg_html = svg
 
     lichess: str = _lichess_link(fen=fen)
 
@@ -599,7 +833,7 @@ def _solution_block(
   <div class="eval {eval_cls}">{escape(eval_str)}</div>
 </div>
 <div class="board-row">
-  {svg_html}
+  {board_html}
   <div class="meta-block">
     <dl class="kv">{kv_html}</dl>
     <p class="pv"><strong>PV from leaf:</strong> {escape(pv_str)}</p>
@@ -620,12 +854,18 @@ def _top_solutions_card(
         return ""
     top_n = min(top_n, len(results))
     blocks: list[str] = [
-        _solution_block(r=r, wildcard_player=wildcard_player, is_top=True, include_svg=True)
+        _solution_block(
+            r=r,
+            wildcard_player=wildcard_player,
+            is_top=True,
+            include_svg=True,
+            interactive=True,
+        )
         for r in results[:top_n]
     ]
     return f"""
 <details open>
-  <summary>Top {top_n} solutions (with board diagrams)</summary>
+  <summary>Top {top_n} solutions (interactive boards — click a move or use ← →)</summary>
   <div class="body">
     {''.join(blocks)}
   </div>
@@ -701,6 +941,7 @@ def json_to_html(*, data: dict[str, Any], top_n_with_boards: int = 5) -> str:
 <main>
 {body}
 </main>
+<script>{_VIEWER_JS}</script>
 </body>
 </html>
 """

@@ -189,10 +189,12 @@ class TestJsonToHtmlIntegration:
     def test_no_external_assets(self):
         html = json_to_html(data=_make_fixture_data())
         # No remote stylesheets, scripts, or images.
-        assert "http://" not in html.replace("http://www.w3.org", "")  # SVG xmlns allowed
-        # Lichess links are intentional (user-facing only) — they go through escape().
-        assert "<script" not in html
+        # SVG xmlns (http://www.w3.org/...) and user-facing lichess links are allowed.
         assert "<link rel=\"stylesheet\"" not in html
+        # Any <script> tags must be inline (no src attribute pointing anywhere).
+        import re as _re
+        for tag in _re.findall(r"<script[^>]*>", html):
+            assert "src=" not in tag, f"External script reference found: {tag}"
 
     def test_contains_spec_and_top_line(self):
         html = json_to_html(data=_make_fixture_data())
@@ -238,6 +240,56 @@ class TestJsonToHtmlIntegration:
         assert "4 distinct first moves" in html
 
 
+class TestInteractiveViewer:
+    """The top-N solutions get an interactive ply-stepper viewer."""
+
+    def test_viewer_present_for_each_top_solution(self):
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=2)
+        # Two top solutions → two viewers.
+        assert html.count('class="viewer"') == 2
+        assert 'id="viewer-1"' in html
+        assert 'id="viewer-2"' in html
+
+    def test_viewer_has_per_ply_panels(self):
+        # Top solution in fixture has 4 plies → 5 panels (start + 4 plies).
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=1)
+        # data-total-plies should equal 5 for the 4-move fool's mate line.
+        assert 'data-total-plies="5"' in html
+        # Default to final ply visible.
+        assert 'data-current-ply="4"' in html
+        # Five viewer-ply divs in the first viewer.
+        assert html.count('class="viewer-ply"') + html.count('class="viewer-ply is-current"') == 5
+
+    def test_viewer_nav_buttons_present(self):
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=1)
+        for action in ("start", "prev", "next", "end"):
+            assert f'data-action="{action}"' in html
+
+    def test_viewer_move_buttons_with_correct_ply_indices(self):
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=1)
+        # The fool's-mate line has 4 moves at ply indices 1, 2, 3, 4.
+        for ply_idx in (1, 2, 3, 4):
+            assert f'data-ply="{ply_idx}"' in html
+        # The mating move SAN should appear as a move button text.
+        assert ">Qh4#</button>" in html
+
+    def test_inline_js_controller_present(self):
+        html = json_to_html(data=_make_fixture_data())
+        # The vanilla controller is embedded directly, not loaded externally.
+        assert "<script>" in html
+        assert "setPly" in html
+        # No external script src.
+        import re as _re
+        for tag in _re.findall(r"<script[^>]*>", html):
+            assert "src=" not in tag
+
+    def test_non_top_solutions_have_no_viewer(self):
+        data = _make_fixture_data()
+        html = json_to_html(data=data, top_n_with_boards=1)
+        # Only the top 1 solution gets a viewer; the other 3 don't.
+        assert html.count('class="viewer"') == 1
+
+
 class TestWhiteWildcardPlayer:
     """Sanity check: when the WP is white, line[0] is their first move and
     the report should orient itself accordingly."""
@@ -258,27 +310,27 @@ class TestWhiteWildcardPlayer:
             "results": [
                 {
                     "rank": 1,
-                    "line": ["e4", "f6", "Qh5+", "c6", "Qxe5"],
-                    "fen": chess.STARTING_FEN,
+                    "line": ["e4", "f6", "Nc3", "c6", "Nf3"],
+                    "fen": "rnbqkbnr/pp1pp1pp/2p2p2/8/4P3/2N2N2/PPPP1PPP/R1BQKB1R b KQkq - 3 3",
                     "centipawns": 200,
                     "mate_in": None,
                     "terminal": None,
                     "wildcard_player_centipawns": 200,
                     "evaluation_str": "+2.00",
-                    "best_move": "Nf3",
-                    "principal_variation": ["Nf3"],
+                    "best_move": "Nf6",
+                    "principal_variation": ["Nf6"],
                 },
                 {
                     "rank": 2,
                     "line": ["d4", "f6", "e3", "c6", "Nf3"],
-                    "fen": chess.STARTING_FEN,
+                    "fen": "rnbqkbnr/pp1pp1pp/2p2p2/8/3P4/4PN2/PPP2PPP/RNBQKB1R b KQkq - 1 3",
                     "centipawns": 50,
                     "mate_in": None,
                     "terminal": None,
                     "wildcard_player_centipawns": 50,
                     "evaluation_str": "+0.50",
-                    "best_move": "c4",
-                    "principal_variation": ["c4"],
+                    "best_move": "Nf6",
+                    "principal_variation": ["Nf6"],
                 },
             ],
         }
