@@ -387,8 +387,21 @@ def _eval_class(*, wp_cp: int | None, terminal: str | None, mate_in: int | None,
     return "eval-even"
 
 
-def _lichess_link(*, fen: str) -> str:
-    return f"https://lichess.org/analysis?fen={quote(fen)}"
+def _lichess_link(*, line: list[str], wildcard_player: str) -> str:
+    """URL for lichess's analysis board, pre-loaded with the line's full PGN.
+
+    Uses lichess's canonical ``/analysis/pgn/<pgn>`` route (per their routes
+    file, ``GET /analysis/pgn/*pgn`` captures the PGN as a path-tail). The
+    PGN is URL-encoded so SAN annotations like ``#`` (mate), ``+`` (check),
+    and spaces survive intact. ``?color=<white|black>`` orients the board so
+    the wildcard player is at the bottom, matching our own diagrams.
+
+    Loading via PGN — rather than FEN — preserves the move history, so the
+    user can step backwards through the line in lichess's own viewer.
+    """
+    pgn: str = _line_to_pgn(line=line)
+    color: str = "black" if wildcard_player == "black" else "white"
+    return f"https://lichess.org/analysis/pgn/{quote(pgn)}?color={color}"
 
 
 def _wp_first_move_index(*, wildcard_player: str) -> int:
@@ -853,7 +866,7 @@ def _solution_block(
             check=check_sq,
         )
 
-    lichess: str = _lichess_link(fen=fen)
+    lichess: str = _lichess_link(line=line, wildcard_player=wildcard_player)
 
     classes: str = "solution solution-top" if is_top else "solution"
     head_line_pgn: str = _line_to_pgn(line=line)
