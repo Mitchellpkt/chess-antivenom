@@ -3,9 +3,9 @@ from loguru import logger
 
 
 # CONFIGURATION
-config_experiment_tag: str = "E1_fangs_as_black"
-config_input_path: Path = Path.cwd() / "inputs" / "format_0" / "fangs_as_black.pgn"
-config_output_path: Path = Path.cwd() / "outputs" / "E1" / "fangs_as_black.json"
+config_experiment_tag: str = "E1_silly_knight"
+config_input_path: Path = Path.cwd() / "inputs" / "format_0" / "silly_knight_moves.pgn"
+config_output_path: Path = Path.cwd() / "outputs" / "E1" / "silly_knight_moves.json"
 
 # -----------------------------------------------------------------------
 # Everything below this line should be automatic
