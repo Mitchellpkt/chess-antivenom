@@ -290,6 +290,65 @@ class TestInteractiveViewer:
         assert html.count('class="viewer"') == 1
 
 
+class TestInteractiveContinuation:
+    """The viewer extends past the leaf and into the engine's principal
+    variation, with a phase badge and a visual separator between the two."""
+
+    def test_total_plies_includes_pv(self):
+        # Result #2 has line length 4 + PV length 2 → 4+2+1 = 7 plies.
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=2)
+        assert 'data-total-plies="7"' in html
+        # And the opening-only count is len(line)+1 = 5.
+        assert 'data-opening-plies="5"' in html
+
+    def test_default_ply_is_leaf_not_end_of_pv(self):
+        # For result #2 the leaf is ply 4 (len(line) == 4), not ply 6.
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=2)
+        # Both viewers should default to their leaf, not the end of PV.
+        assert 'data-current-ply="4"' in html
+
+    def test_pv_moves_get_pv_class(self):
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=2)
+        # PV moves use 'move-btn-pv' to render in a softer/italic style.
+        assert '<button class="move-btn move-btn-pv"' in html
+        # PV first move from result #2 is 'e3' (white's 3rd move after the leaf).
+        assert ">e3</button>" in html
+
+    def test_separator_present_when_pv_exists(self):
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=2)
+        # A vertical-bar separator marks the opening→continuation boundary.
+        assert '<span class="move-sep"' in html
+
+    def test_phase_badge_present_and_initially_opening(self):
+        # Default ply is the leaf, which is still the opening phase.
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=2)
+        assert 'class="viewer-phase"' in html
+        assert 'data-phase="opening"' in html
+        assert ">Opening<" in html
+
+    def test_terminal_solution_has_no_continuation_artifacts(self):
+        # Result #1 is fool's mate (terminal, PV=[]) — viewer should look
+        # exactly like the legacy opening-only viewer.
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=1)
+        # No PV → no separator span emitted, no PV-styled button emitted.
+        assert '<span class="move-sep"' not in html
+        assert '<button class="move-btn move-btn-pv"' not in html
+        # And total_plies is just len(line)+1 = 5.
+        assert 'data-total-plies="5"' in html
+
+    def test_truncates_unparseable_pv_without_crashing(self):
+        # Synthetic data with a bogus PV move; report must still render and
+        # the viewer must be sized to only the parseable prefix.
+        data = _make_fixture_data()
+        data["results"][1]["principal_variation"] = ["e3", "totally-not-a-move"]
+        html = json_to_html(data=data, top_n_with_boards=2)
+        # PV truncated after 1 valid move: opening 4 + cont 1 + start = 6 plies.
+        assert 'data-total-plies="6"' in html
+        # The bad SAN must not appear as a clickable move button (it may
+        # still surface in the static "PV from leaf" text — that's fine).
+        assert ">totally-not-a-move</button>" not in html
+
+
 class TestHeaderExtras:
     def test_favicon_data_uri_present(self):
         html = json_to_html(data=_make_fixture_data())
@@ -329,8 +388,8 @@ class TestWhiteWildcardPlayer:
                     "terminal": None,
                     "wildcard_player_centipawns": 200,
                     "evaluation_str": "+2.00",
-                    "best_move": "Nf6",
-                    "principal_variation": ["Nf6"],
+                    "best_move": "d5",
+                    "principal_variation": ["d5"],
                 },
                 {
                     "rank": 2,
@@ -341,8 +400,8 @@ class TestWhiteWildcardPlayer:
                     "terminal": None,
                     "wildcard_player_centipawns": 50,
                     "evaluation_str": "+0.50",
-                    "best_move": "Nf6",
-                    "principal_variation": ["Nf6"],
+                    "best_move": "d5",
+                    "principal_variation": ["d5"],
                 },
             ],
         }

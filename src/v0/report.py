@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 import chess
 import chess.svg
+from loguru import logger
 
 
 # Tiny chess-knight favicon, embedded as a data URI so the report stays
@@ -272,6 +273,29 @@ pre.raw {
   border-color: var(--gold-strong);
   font-weight: 600;
 }
+.viewer-moves .move-btn.move-btn-pv { color: var(--text-soft); font-style: italic; }
+.viewer-moves .move-btn.move-btn-pv.is-current { color: #4a2f10; font-style: italic; }
+.viewer-moves .move-sep {
+  color: var(--border);
+  margin: 0 5px;
+  font-weight: 300;
+  user-select: none;
+}
+.viewer-phase {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--card-alt);
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-left: 6px;
+}
+.viewer-phase[data-phase="continuation"] {
+  background: var(--gold);
+  color: #4a2f10;
+}
 .viewer-hint { font-size: 11px; color: var(--text-soft); font-style: italic; }
 """
 
@@ -280,6 +304,7 @@ _VIEWER_JS: str = r"""
 (function () {
   function setPly(viewer, ply) {
     var total = parseInt(viewer.dataset.totalPlies, 10);
+    var opening = parseInt(viewer.dataset.openingPlies, 10);
     if (ply < 0) ply = 0;
     if (ply > total - 1) ply = total - 1;
     viewer.dataset.currentPly = String(ply);
@@ -296,6 +321,14 @@ _VIEWER_JS: str = r"""
     }
     var counter = viewer.querySelector('.viewer-ply-counter');
     if (counter) counter.textContent = ply + ' / ' + (total - 1);
+    var phase = viewer.querySelector('.viewer-phase');
+    if (phase && !isNaN(opening)) {
+      // Plies 0..opening-1 are the opening; once any PV move has been played
+      // (ply >= opening), the badge flips to 'continuation'.
+      var isCont = ply >= opening;
+      phase.dataset.phase = isCont ? 'continuation' : 'opening';
+      phase.textContent = isCont ? 'Continuation' : 'Opening';
+    }
     var prevBtn = viewer.querySelector('[data-action="prev"]');
     var startBtn = viewer.querySelector('[data-action="start"]');
     var nextBtn = viewer.querySelector('[data-action="next"]');
@@ -716,42 +749,66 @@ def _per_first_move_card(*, results: list[dict[str, Any]], wildcard_player: str)
 def _replay_line_to_svgs(
     *,
     line: list[str],
+    continuation: list[str],
     wildcard_player: str,
     size: int,
-) -> list[str]:
-    """Replay a SAN line and return one chess.svg board per ply.
+) -> tuple[list[str], int]:
+    """Replay a SAN opening plus engine continuation; return one SVG per ply.
 
-    Returns ``len(line) + 1`` SVG strings: index 0 is the starting position,
-    index k is the position after the k-th ply has been played. Each SVG
-    after the first includes an arrow for the move that led there, and a
-    check highlight when the side to move is in check (which is also true
-    for checkmate).
+    Returns ``(svgs, n_continuation_played)``. ``svgs[0]`` is the starting
+    position, ``svgs[k]`` is the position after the k-th ply. The first
+    ``len(line) + 1`` SVGs cover the opening; any remaining ones cover as
+    much of the PV as parsed cleanly. ``n_continuation_played`` is the
+    number of continuation plies actually replayed — usually
+    ``len(continuation)``, less if the PV had to be truncated.
+
+    Each SVG after the first includes an arrow for the move that led there,
+    and a check highlight when the side to move is in check.
     """
     flipped: bool = wildcard_player == "black"
     board: chess.Board = chess.Board()
     svgs: list[str] = [
         chess.svg.board(board=board, size=size, flipped=flipped)
     ]
+    # The opening must parse — those moves came from the deterministic
+    # spec-expansion in this codebase, so a failure here is a real bug.
     for san in line:
         move: chess.Move = board.parse_san(san)
         board.push(move)
         check_sq: int | None = board.king(board.turn) if board.is_check() else None
         svgs.append(
             chess.svg.board(
-                board=board,
-                size=size,
-                flipped=flipped,
-                lastmove=move,
-                check=check_sq,
+                board=board, size=size, flipped=flipped,
+                lastmove=move, check=check_sq,
             )
         )
-    return svgs
+    # PV comes from Stockfish and is normally legal, but defensively truncate
+    # at any unparseable move so a single flaky engine output doesn't break
+    # the whole report. The opening-only viewer still works.
+    n_continuation: int = 0
+    for san in continuation:
+        try:
+            move = board.parse_san(san)
+        except (chess.IllegalMoveError, chess.AmbiguousMoveError, chess.InvalidMoveError, ValueError) as e:
+            logger.warning(f"PV truncated — could not parse SAN {san!r} from {board.fen()}: {e}")
+            break
+        board.push(move)
+        check_sq = board.king(board.turn) if board.is_check() else None
+        svgs.append(
+            chess.svg.board(
+                board=board, size=size, flipped=flipped,
+                lastmove=move, check=check_sq,
+            )
+        )
+        n_continuation += 1
+    return svgs, n_continuation
 
 
 def _interactive_viewer_html(
     *,
     viewer_id: str,
     line: list[str],
+    continuation: list[str],
     wildcard_player: str,
     size: int = 280,
 ) -> str:
@@ -759,21 +816,35 @@ def _interactive_viewer_html(
 
     All per-ply SVGs are pre-rendered server-side and emitted as hidden divs;
     the JS controller in ``_VIEWER_JS`` toggles which one is visible. The
-    viewer defaults to the final ply (matches the static-board behaviour and
-    is the position the eval refers to).
+    viewer defaults to the leaf position (ply = ``len(line)``) since that's
+    the position the eval refers to. From there, the user can step forward
+    into the engine's principal variation. A small badge labels each ply as
+    ``Opening`` or ``Continuation``.
     """
-    svgs: list[str] = _replay_line_to_svgs(
-        line=line, wildcard_player=wildcard_player, size=size
+    svgs, n_cont = _replay_line_to_svgs(
+        line=line,
+        continuation=continuation,
+        wildcard_player=wildcard_player,
+        size=size,
     )
+    # Trim the displayed continuation to what was actually replayed so we
+    # don't surface clickable move buttons that point at non-existent plies.
+    effective_continuation: list[str] = list(continuation[:n_cont])
     total_plies: int = len(svgs)
-    default_ply: int = total_plies - 1
+    # Opening covers plies 0..len(line) (inclusive). ``opening_plies`` is the
+    # count of opening plies, i.e. the first PV-extended ply has index ==
+    # opening_plies. Continuation plies are ``[opening_plies, total_plies)``.
+    opening_plies: int = len(line) + 1
+    default_ply: int = len(line)  # leaf position
 
     ply_divs: list[str] = []
     for i, svg in enumerate(svgs):
         cls: str = "viewer-ply is-current" if i == default_ply else "viewer-ply"
         ply_divs.append(f'<div class="{cls}" data-ply="{i}">{svg}</div>')
 
-    # Move list — interleave move numbers with clickable move buttons.
+    # Move list — interleave move numbers with clickable buttons. Opening
+    # moves use the default style; continuation (PV) moves get a softer
+    # italic style and a separator marks the boundary.
     move_items: list[str] = []
     for i, san in enumerate(line):
         if i % 2 == 0:
@@ -782,17 +853,33 @@ def _interactive_viewer_html(
         move_items.append(
             f'<button class="move-btn" type="button" data-ply="{ply_idx}">{escape(san)}</button>'
         )
+    if effective_continuation:
+        move_items.append(
+            '<span class="move-sep" title="end of opening — engine continuation begins">│</span>'
+        )
+    for j, san in enumerate(effective_continuation):
+        overall_idx: int = len(line) + j
+        if overall_idx % 2 == 0:
+            move_items.append(f'<span class="move-num">{overall_idx // 2 + 1}.</span>')
+        ply_idx = overall_idx + 1
+        move_items.append(
+            f'<button class="move-btn move-btn-pv" type="button" data-ply="{ply_idx}">{escape(san)}</button>'
+        )
     move_list: str = "".join(move_items) if move_items else '<span class="viewer-hint">no moves</span>'
 
+    phase_initial: str = "continuation" if default_ply >= opening_plies else "opening"
+    phase_label: str = "Continuation" if phase_initial == "continuation" else "Opening"
+
     return f"""
-<div class="viewer" id="{viewer_id}" data-total-plies="{total_plies}" data-current-ply="{default_ply}" tabindex="0">
+<div class="viewer" id="{viewer_id}" data-total-plies="{total_plies}" data-opening-plies="{opening_plies}" data-current-ply="{default_ply}" tabindex="0">
   <div class="viewer-boards">{''.join(ply_divs)}</div>
   <div class="viewer-controls">
     <button type="button" data-action="start" aria-label="First ply">|◀</button>
     <button type="button" data-action="prev" aria-label="Previous ply">◀</button>
-    <span class="viewer-ply-counter">{default_ply} / {default_ply}</span>
+    <span class="viewer-ply-counter">{default_ply} / {total_plies - 1}</span>
     <button type="button" data-action="next" aria-label="Next ply">▶</button>
     <button type="button" data-action="end" aria-label="Last ply">▶|</button>
+    <span class="viewer-phase" data-phase="{phase_initial}">{phase_label}</span>
   </div>
   <div class="viewer-moves">{move_list}</div>
   <p class="viewer-hint">click a move or use ← → ↖ ↘ (Home/End) when focused</p>
@@ -853,6 +940,7 @@ def _solution_block(
         board_html = _interactive_viewer_html(
             viewer_id=viewer_id,
             line=line,
+            continuation=pv,
             wildcard_player=wildcard_player,
         )
     elif include_svg:
