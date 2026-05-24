@@ -69,17 +69,64 @@ class MoveNode:
 
         Yields one (line, fen) per leaf, in deterministic depth-first order.
         """
-        yield from self._iter_leaves_recursive(prefix=())
+        for line, path_fens in self.iter_leaf_paths():
+            yield (line, path_fens[-1])
 
-    def _iter_leaves_recursive(
-        self, prefix: tuple[str, ...]
-    ) -> Iterator[tuple[tuple[str, ...], str]]:
-        current: tuple[str, ...] = prefix + (self.move,) if self.move else prefix
+    def iter_leaf_paths(
+        self,
+    ) -> Iterator[tuple[tuple[str, ...], tuple[str, ...]]]:
+        """Yield (line, path_fens) for every leaf in the tree.
+
+        ``line`` is the SAN move tuple from the root to the leaf (same as
+        ``iter_leaves``). ``path_fens`` is a tuple of FENs of length
+        ``len(line) + 1`` where ``path_fens[0]`` is the starting position and
+        ``path_fens[i]`` is the position after the i-th ply.
+
+        Yields one entry per leaf, in deterministic depth-first order.
+        """
+        yield from self._iter_leaf_paths_recursive(
+            line_prefix=(), fen_prefix=(self.fen,)
+        )
+
+    def _iter_leaf_paths_recursive(
+        self,
+        line_prefix: tuple[str, ...],
+        fen_prefix: tuple[str, ...],
+    ) -> Iterator[tuple[tuple[str, ...], tuple[str, ...]]]:
+        # The root call passes line_prefix=() and fen_prefix=(root.fen,);
+        # children extend both with their own move/fen.
+        if self.move is None:
+            current_line: tuple[str, ...] = line_prefix
+            current_fens: tuple[str, ...] = fen_prefix
+        else:
+            current_line = line_prefix + (self.move,)
+            current_fens = fen_prefix + (self.fen,)
         if not self.children:
-            yield (current, self.fen)
+            yield (current_line, current_fens)
             return
         for child in self.children:
-            yield from child._iter_leaves_recursive(current)
+            yield from child._iter_leaf_paths_recursive(
+                line_prefix=current_line, fen_prefix=current_fens
+            )
+
+    def unique_fens(self) -> tuple[str, ...]:
+        """Return every distinct FEN in the tree (root, intermediates, leaves).
+
+        Order is deterministic: first-seen in a depth-first walk. Intermediate
+        positions are shared across many leaves (transpositions), so this set
+        is much smaller than the leaf count when there are multiple wildcards
+        on the same side.
+        """
+        seen: dict[str, None] = {}
+        for node in self._walk():
+            if node.fen not in seen:
+                seen[node.fen] = None
+        return tuple(seen.keys())
+
+    def _walk(self) -> Iterator["MoveNode"]:
+        yield self
+        for child in self.children:
+            yield from child._walk()
 
     @property
     def line_count(self) -> int:
