@@ -245,10 +245,12 @@ class TestInteractiveViewer:
 
     def test_viewer_present_for_each_top_solution(self):
         html = json_to_html(data=_make_fixture_data(), top_n_with_boards=2)
-        # Two top solutions → two viewers.
+        # Two top solutions, each with one variation → two viewers.
         assert html.count('class="viewer"') == 2
-        assert 'id="viewer-1"' in html
-        assert 'id="viewer-2"' in html
+        # Viewer IDs are now namespaced by (rank, variation_index) — the
+        # primary variation has index 0.
+        assert 'id="viewer-1-0"' in html
+        assert 'id="viewer-2-0"' in html
 
     def test_viewer_has_per_ply_panels(self):
         # Top solution in fixture has 4 plies → 5 panels (start + 4 plies).
@@ -359,6 +361,112 @@ class TestHeaderExtras:
         html = json_to_html(data=_make_fixture_data())
         assert "Antivenom Analysis (MitchellPKT)" in html
         assert 'href="https://github.com/mitchellpkt/chess-antivenom"' in html
+
+
+class TestPerPlyEvalDisplay:
+    """Each viewer-ply div carries data-eval and data-eval-cls attributes so
+    the JS controller can update a single eval readout as the user steps."""
+
+    def _fixture_with_path_evals(self) -> dict:
+        data = _make_fixture_data()
+        # Add per-ply evals to result #2 (the only non-terminal in the fixture
+        # with a reasonable cp at each ply). Five plies: 0..4.
+        data["results"][1]["path_evals"] = [
+            {"ply": 0, "move": None, "fen": "x", "centipawns": 25, "mate_in": None,
+             "terminal": None, "wildcard_player_centipawns": -25, "evaluation_str": "+0.25"},
+            {"ply": 1, "move": "g4", "fen": "x", "centipawns": -50, "mate_in": None,
+             "terminal": None, "wildcard_player_centipawns": 50, "evaluation_str": "-0.50"},
+            {"ply": 2, "move": "d6", "fen": "x", "centipawns": -45, "mate_in": None,
+             "terminal": None, "wildcard_player_centipawns": 45, "evaluation_str": "-0.45"},
+            {"ply": 3, "move": "f3", "fen": "x", "centipawns": -60, "mate_in": None,
+             "terminal": None, "wildcard_player_centipawns": 60, "evaluation_str": "-0.60"},
+            {"ply": 4, "move": "Nf6", "fen": "x", "centipawns": -50, "mate_in": None,
+             "terminal": None, "wildcard_player_centipawns": 50, "evaluation_str": "-0.50"},
+        ]
+        return data
+
+    def test_eval_attrs_present_on_each_ply(self):
+        data = self._fixture_with_path_evals()
+        html = json_to_html(data=data, top_n_with_boards=2)
+        # Each emitted eval_str from result #2 appears as a data-eval attribute.
+        for expected in ("+0.25", "-0.50", "-0.45", "-0.60"):
+            assert f'data-eval="{expected}"' in html
+
+    def test_viewer_eval_readout_present(self):
+        html = json_to_html(data=self._fixture_with_path_evals(), top_n_with_boards=2)
+        assert 'class="viewer-eval-row"' in html
+        # The leaf eval string seeds the readout initially.
+        assert 'class="viewer-eval eval' in html
+
+
+class TestTranspositionCycler:
+    """Transpositions get folded into their primary; the report renders a
+    cycler control on each top-N solution with >1 variation."""
+
+    def _fixture_with_transposition(self) -> dict:
+        data = _make_fixture_data()
+        # Give result #2 one transposition (alternate move order to same leaf).
+        data["results"][1]["transpositions"] = [
+            {
+                "line": ["g4", "Nf6", "f3", "d6"],
+                "path_evals": [
+                    {"ply": 0, "move": None, "fen": "x", "centipawns": 25,
+                     "mate_in": None, "terminal": None,
+                     "wildcard_player_centipawns": -25, "evaluation_str": "+0.25"},
+                    {"ply": 1, "move": "g4", "fen": "x", "centipawns": -50,
+                     "mate_in": None, "terminal": None,
+                     "wildcard_player_centipawns": 50, "evaluation_str": "-0.50"},
+                    {"ply": 2, "move": "Nf6", "fen": "x", "centipawns": 30,
+                     "mate_in": None, "terminal": None,
+                     "wildcard_player_centipawns": -30, "evaluation_str": "+0.30"},
+                    {"ply": 3, "move": "f3", "fen": "x", "centipawns": 40,
+                     "mate_in": None, "terminal": None,
+                     "wildcard_player_centipawns": -40, "evaluation_str": "+0.40"},
+                    {"ply": 4, "move": "d6", "fen": "x", "centipawns": -50,
+                     "mate_in": None, "terminal": None,
+                     "wildcard_player_centipawns": 50, "evaluation_str": "-0.50"},
+                ],
+            }
+        ]
+        return data
+
+    def test_cycler_present_when_transpositions_exist(self):
+        html = json_to_html(data=self._fixture_with_transposition(), top_n_with_boards=2)
+        assert 'class="variation-cycler"' in html
+        for action in ("var-prev", "var-next"):
+            assert f'data-action="{action}"' in html
+
+    def test_two_viewers_for_solution_with_one_transposition(self):
+        # Top-1 = result #1 (fool's mate, no trans) → 1 viewer.
+        # Top-2 = result #2 (1 transposition) → 2 viewers.
+        html = json_to_html(data=self._fixture_with_transposition(), top_n_with_boards=2)
+        assert html.count('class="viewer"') == 3
+        # Both variations of result #2 have viewer IDs.
+        assert 'id="viewer-2-0"' in html
+        assert 'id="viewer-2-1"' in html
+
+    def test_data_variation_count_attribute(self):
+        html = json_to_html(data=self._fixture_with_transposition(), top_n_with_boards=2)
+        # data-variation-count="2" appears on the solution wrapper for #2.
+        assert 'data-variation-count="2"' in html
+
+    def test_transposition_line_carried_on_variation_div(self):
+        html = json_to_html(data=self._fixture_with_transposition(), top_n_with_boards=2)
+        # The transposition line "1. g4 Nf6 2. f3 d6" should appear as a data-variation-line.
+        assert 'data-variation-line="1. g4 Nf6 2. f3 d6"' in html
+
+    def test_non_top_solution_lists_transpositions_as_text(self):
+        # When the solution is NOT in the top-N, transpositions are listed as text.
+        html = json_to_html(data=self._fixture_with_transposition(), top_n_with_boards=1)
+        # Result #2 is now in the "all other solutions" section (non-interactive).
+        # Its single transposition line should still surface in text form.
+        assert "Transpositions (1)" in html
+        assert "1. g4 Nf6 2. f3 d6" in html
+
+    def test_no_cycler_when_no_transpositions(self):
+        # The base fixture has zero transpositions.
+        html = json_to_html(data=_make_fixture_data(), top_n_with_boards=2)
+        assert 'class="variation-cycler"' not in html
 
 
 class TestWhiteWildcardPlayer:

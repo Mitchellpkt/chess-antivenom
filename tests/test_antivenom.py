@@ -192,14 +192,85 @@ class TestRunAntivenomSmoke:
 
         assert result.wildcard_player == "black"
         assert result.total_leaves == 20
+        # No transpositions possible with a single wildcard ply.
+        assert result.unique_leaves == 20
         assert len(result.results) == 20
         # All results should have line length 2.
         assert all(len(r.line) == 2 for r in result.results)
+        # Each primary carries a path_evals tuple of length len(line)+1.
+        for r in result.results:
+            assert len(r.path_evals) == len(r.line) + 1
+            assert r.path_evals[0].ply == 0
+            assert r.path_evals[-1].fen == r.fen
+            assert r.transpositions == ()
         # JSON shape includes meta + results.
         d = result.to_json_dict()
         assert "meta" in d
         assert "results" in d
         assert d["meta"]["wildcard_player"] == "black"
         assert d["meta"]["total_leaves"] == 20
+        assert d["meta"]["unique_leaves"] == 20
+        assert d["meta"]["unique_positions_evaluated"] >= 21  # root + 20 ply-1 positions
         assert len(d["results"]) == 20
         assert d["results"][0]["rank"] == 1
+        assert "path_evals" in d["results"][0]
+        assert "transpositions" in d["results"][0]
+
+
+@needs_stockfish
+class TestRunAntivenomTranspositions:
+    """When two distinct wildcard-player move orders reach the same leaf FEN,
+    they're folded into one primary + N transpositions."""
+
+    def test_two_wildcards_produce_transpositions(self):
+        # 4-ply: white plays two wildcards, black is forced f6/c6. Any pair of
+        # non-interacting white moves will transpose (e.g. Nf3-Nc3 == Nc3-Nf3).
+        result = run_antivenom(
+            spec="1. __ f6 2. __ c6",
+            stockfish_depth=6,
+            stockfish_threads=1,
+            stockfish_hash_mb=64,
+            wildcard_symbol="__",
+            stockfish_path=None,
+            verbosity=0,
+        )
+
+        assert result.wildcard_player == "white"
+        # Strictly fewer primaries than total enumerated leaves.
+        assert result.unique_leaves < result.total_leaves, (
+            f"Expected some transpositions, but got {result.unique_leaves} "
+            f"primaries from {result.total_leaves} leaves."
+        )
+        total_trans = sum(len(r.transpositions) for r in result.results)
+        # The leaves are partitioned into (primaries) + (their transpositions).
+        assert result.unique_leaves + total_trans == result.total_leaves
+
+    def test_transpositions_share_leaf_fen_with_primary(self):
+        result = run_antivenom(
+            spec="1. __ f6 2. __ c6",
+            stockfish_depth=4,
+            stockfish_threads=1,
+            stockfish_hash_mb=64,
+            wildcard_symbol="__",
+            stockfish_path=None,
+            verbosity=0,
+        )
+
+        # Pick any primary that has transpositions, then verify they all reach
+        # the same final FEN by replay.
+        import chess as _chess
+
+        for r in result.results:
+            if not r.transpositions:
+                continue
+            for t in r.transpositions:
+                board = _chess.Board()
+                for san in t.line:
+                    board.push_san(san)
+                assert board.fen() == r.fen, (
+                    f"Transposition line {t.line} reached {board.fen()}, "
+                    f"expected primary FEN {r.fen}"
+                )
+            break  # one such example is enough
+        else:
+            pytest.fail("Expected at least one primary with transpositions in this spec.")

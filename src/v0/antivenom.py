@@ -3,8 +3,13 @@
 Given a PGN-with-wildcards spec where one side ("system player") commits to a
 fixed move sequence and the other side ("wildcard player") branches into every
 legal move at each of their plies, exhaustively enumerate the resulting tree,
-evaluate every leaf position with Stockfish, and return the leaves ranked from
-the wildcard player's perspective (best result first).
+evaluate every unique position (root + intermediates + leaves) with Stockfish,
+and return the leaves ranked from the wildcard player's perspective.
+
+Transposition handling: when two distinct wildcard-player move orders reach
+the same leaf FEN, they're grouped. The "primary" of the group is the variation
+with the best worst-case intermediate evaluation (max-of-worst, from the WP's
+perspective); the rest are folded onto it as ``transpositions``.
 
 The selection criterion is "single best leaf, opponent fully deterministic" —
 no minimax, no heuristic pruning. Every legal wildcard choice is enumerated.
@@ -13,6 +18,7 @@ no minimax, no heuristic pruning. Every legal wildcard choice is enumerated.
 from __future__ import annotations
 
 import time
+from collections import defaultdict
 from typing import Any
 
 from loguru import logger
@@ -100,8 +106,65 @@ def _compute_sort_key(
     return (1, wp_cp)
 
 
+def _eval_str_from(
+    *, terminal: str | None, mate_in: int | None, centipawns: int | None
+) -> str:
+    """Human-readable eval string: terminal label, M±N for mate, or cp/100."""
+    if terminal is not None:
+        return terminal
+    if mate_in is not None:
+        return f"M{mate_in:+d}"
+    if centipawns is not None:
+        return f"{centipawns / 100:+.2f}"
+    return "?"
+
+
+def _wp_centipawns(*, centipawns: int | None, wildcard_player: str) -> int | None:
+    """Flip cp sign so positive = good for the wildcard player."""
+    if centipawns is None:
+        return None
+    return centipawns if wildcard_player == "white" else -centipawns
+
+
+class PathEval(BaseModel):
+    """Evaluation of one position along a leaf's path (root → ... → leaf)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ply: int
+    """0 = starting position; ply k = position after the k-th ply was played."""
+
+    move: str | None
+    """SAN of the move that produced this position. None for ply 0 (root)."""
+
+    fen: str
+    centipawns: int | None
+    """Engine eval (white POV). None for mate or terminal."""
+
+    mate_in: int | None
+    terminal: str | None
+    wildcard_player_centipawns: int | None
+    """Centipawns from the wildcard player's perspective. None for mate/terminal."""
+
+    evaluation_str: str
+
+
+class Transposition(BaseModel):
+    """An alternate move order that reaches the same leaf FEN as its primary.
+
+    The leaf-level data (cp, mate_in, terminal, best_move, PV) is by
+    construction identical to the primary's, so we don't repeat it here —
+    only the differing path (line + per-ply evals) is stored.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    line: tuple[str, ...]
+    path_evals: tuple[PathEval, ...]
+
+
 class LeafResult(BaseModel):
-    """Evaluation of one enumerated leaf line."""
+    """Evaluation of one enumerated leaf line (a primary, post-dedup)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -129,6 +192,12 @@ class LeafResult(BaseModel):
     wildcard_player_centipawns: int | None
     """Centipawns from the wildcard player's perspective. None for terminal or mate."""
 
+    path_evals: tuple[PathEval, ...]
+    """Per-ply evaluation along the primary's path (ply 0 = root, ply N = leaf)."""
+
+    transpositions: tuple[Transposition, ...] = Field(default_factory=tuple)
+    """Alternate move orders that reach the same leaf FEN."""
+
     sort_category: int
     """Bucket used for ranking — see _compute_sort_key."""
 
@@ -137,13 +206,9 @@ class LeafResult(BaseModel):
 
     @property
     def evaluation_str(self) -> str:
-        if self.terminal is not None:
-            return self.terminal
-        if self.mate_in is not None:
-            return f"M{self.mate_in:+d}"
-        if self.centipawns is not None:
-            return f"{self.centipawns / 100:+.2f}"
-        return "?"
+        return _eval_str_from(
+            terminal=self.terminal, mate_in=self.mate_in, centipawns=self.centipawns
+        )
 
 
 class AntivenomResult(BaseModel):
@@ -159,6 +224,14 @@ class AntivenomResult(BaseModel):
     stockfish_hash_mb: int
     stockfish_path: str
     total_leaves: int
+    """Total enumerated leaves BEFORE transposition deduplication."""
+
+    unique_leaves: int
+    """Distinct leaf FENs (== len(results), each is one primary)."""
+
+    unique_positions_evaluated: int
+    """Distinct FENs sent to Stockfish (root + intermediates + leaves)."""
+
     evaluated_at_unix: float
     elapsed_seconds: float
     results: tuple[LeafResult, ...] = Field(default_factory=tuple)
@@ -177,6 +250,8 @@ class AntivenomResult(BaseModel):
                     "hash_mb": self.stockfish_hash_mb,
                 },
                 "total_leaves": self.total_leaves,
+                "unique_leaves": self.unique_leaves,
+                "unique_positions_evaluated": self.unique_positions_evaluated,
                 "evaluated_at_unix": self.evaluated_at_unix,
                 "elapsed_seconds": self.elapsed_seconds,
             },
@@ -192,10 +267,95 @@ class AntivenomResult(BaseModel):
                     "evaluation_str": r.evaluation_str,
                     "best_move": r.best_move,
                     "principal_variation": list(r.principal_variation),
+                    "path_evals": [_path_eval_to_dict(pe) for pe in r.path_evals],
+                    "transpositions": [
+                        {
+                            "line": list(t.line),
+                            "path_evals": [_path_eval_to_dict(pe) for pe in t.path_evals],
+                        }
+                        for t in r.transpositions
+                    ],
                 }
                 for i, r in enumerate(self.results)
             ],
         }
+
+
+def _path_eval_to_dict(pe: PathEval) -> dict[str, Any]:
+    return {
+        "ply": pe.ply,
+        "move": pe.move,
+        "fen": pe.fen,
+        "centipawns": pe.centipawns,
+        "mate_in": pe.mate_in,
+        "terminal": pe.terminal,
+        "wildcard_player_centipawns": pe.wildcard_player_centipawns,
+        "evaluation_str": pe.evaluation_str,
+    }
+
+
+def _build_path_evals(
+    *,
+    line: tuple[str, ...],
+    path_fens: tuple[str, ...],
+    eval_cache: dict[str, EvaluationResult],
+    wildcard_player: str,
+) -> tuple[PathEval, ...]:
+    """Assemble the per-ply PathEval list for a single leaf path."""
+    out: list[PathEval] = []
+    # path_fens has length len(line) + 1; index 0 is root, index k is after move k.
+    for ply, fen in enumerate(path_fens):
+        move: str | None = None if ply == 0 else line[ply - 1]
+        ev: EvaluationResult = eval_cache[fen]
+        out.append(
+            PathEval(
+                ply=ply,
+                move=move,
+                fen=fen,
+                centipawns=ev.centipawns,
+                mate_in=ev.mate_in,
+                terminal=ev.terminal,
+                wildcard_player_centipawns=_wp_centipawns(
+                    centipawns=ev.centipawns, wildcard_player=wildcard_player
+                ),
+                evaluation_str=_eval_str_from(
+                    terminal=ev.terminal,
+                    mate_in=ev.mate_in,
+                    centipawns=ev.centipawns,
+                ),
+            )
+        )
+    return tuple(out)
+
+
+def _worst_intermediate_key(
+    *, path_evals: tuple[PathEval, ...], wildcard_player: str
+) -> tuple[int, int]:
+    """Min sort-key across strictly-intermediate plies (excluding root and leaf).
+
+    "Worst" = lowest (sort_category, sort_secondary) from the WP's perspective.
+    Used to pick a primary among transpositions: the variation whose worst
+    intermediate is the highest wins (max-of-worst).
+
+    For paths with zero intermediate plies (line length ≤ 1) there's nothing
+    to compare; return a sentinel that compares equal across all candidates so
+    insertion order acts as the tie-break.
+    """
+    intermediates: list[PathEval] = list(path_evals[1:-1])  # drop root + leaf
+    if not intermediates:
+        # Sentinel: a very-high key so it never artificially de-ranks anyone.
+        return (10**9, 10**9)
+    keys: list[tuple[int, int]] = [
+        _compute_sort_key(
+            terminal=pe.terminal,
+            mate_in=pe.mate_in,
+            centipawns=pe.centipawns,
+            line_length=pe.ply,
+            wildcard_player=wildcard_player,
+        )
+        for pe in intermediates
+    ]
+    return min(keys)
 
 
 def run_antivenom(
@@ -211,20 +371,10 @@ def run_antivenom(
     """Run the full antivenom pipeline on a PGN-with-wildcards spec.
 
     Pipeline: parse → detect wildcard player → expand wildcards exhaustively →
-    evaluate every leaf with a single persistent Stockfish process → sort
-    descending from the wildcard player's perspective.
-
-    Args:
-        spec: PGN with wildcards (e.g. ``"1. Nf3 __ 2. Ne5 __"``).
-        stockfish_depth: Engine search depth at each leaf.
-        stockfish_threads: Engine thread count.
-        stockfish_hash_mb: Engine hash size in MB.
-        wildcard_symbol: The token treated as "any legal move".
-        stockfish_path: Explicit Stockfish binary path. ``None`` = auto-detect.
-        verbosity: 0=silent, 1=info-level progress (default).
-
-    Returns:
-        AntivenomResult with ranked leaf evaluations.
+    evaluate every UNIQUE position (root + intermediates + leaves) with one
+    persistent Stockfish process → assemble per-ply evals per leaf → group
+    leaves by leaf FEN (transpositions) → pick a primary per group via
+    max-of-worst intermediate eval → sort primaries from the WP's perspective.
     """
     started_at: float = time.time()
 
@@ -236,12 +386,18 @@ def run_antivenom(
         logger.info(f"Spec: {spec!r}, wildcard player: {wildcard_player}")
 
     tree = expand_wildcards(spec, wildcard_symbol=wildcard_symbol)
-    leaves: list[tuple[tuple[str, ...], str]] = list(tree.iter_leaves())
-    total_leaves: int = len(leaves)
+    leaf_paths: list[tuple[tuple[str, ...], tuple[str, ...]]] = list(
+        tree.iter_leaf_paths()
+    )
+    total_leaves: int = len(leaf_paths)
+    unique_fens: tuple[str, ...] = tree.unique_fens()
     if verbosity >= 1:
-        logger.info(f"Expanded tree: {total_leaves} leaves to evaluate")
+        logger.info(
+            f"Expanded tree: {total_leaves} leaves, "
+            f"{len(unique_fens)} unique positions to evaluate"
+        )
 
-    leaf_results: list[LeafResult] = []
+    eval_cache: dict[str, EvaluationResult] = {}
     with StockfishEngine(
         depth=stockfish_depth,
         threads=stockfish_threads,
@@ -249,49 +405,80 @@ def run_antivenom(
         stockfish_path=stockfish_path,
     ) as engine:
         resolved_path: str = engine.resolved_stockfish_path or ""
-        for line, fen in tqdm(leaves, desc="Evaluating leaves", mininterval=1):
-            eval_result: EvaluationResult = engine.evaluate(fen=fen)
+        for fen in tqdm(unique_fens, desc="Evaluating positions", mininterval=1):
+            eval_cache[fen] = engine.evaluate(fen=fen)
 
-            wp_cp: int | None = None
-            if (
-                eval_result.terminal is None
-                and eval_result.mate_in is None
-                and eval_result.centipawns is not None
-            ):
-                wp_cp = (
-                    eval_result.centipawns
-                    if wildcard_player == "white"
-                    else -eval_result.centipawns
-                )
+    # Group leaves by leaf FEN (transpositions).
+    groups: dict[str, list[tuple[tuple[str, ...], tuple[str, ...]]]] = defaultdict(list)
+    for line, path_fens in leaf_paths:
+        groups[path_fens[-1]].append((line, path_fens))
 
-            sort_cat, sort_sec = _compute_sort_key(
-                terminal=eval_result.terminal,
-                mate_in=eval_result.mate_in,
-                centipawns=eval_result.centipawns,
-                line_length=len(line),
+    leaf_results: list[LeafResult] = []
+    for leaf_fen, members in groups.items():
+        # Build path_evals for every member, then choose the primary.
+        with_evals: list[
+            tuple[tuple[str, ...], tuple[str, ...], tuple[PathEval, ...]]
+        ] = []
+        for line, path_fens in members:
+            pe: tuple[PathEval, ...] = _build_path_evals(
+                line=line,
+                path_fens=path_fens,
+                eval_cache=eval_cache,
                 wildcard_player=wildcard_player,
             )
+            with_evals.append((line, path_fens, pe))
 
-            leaf_results.append(
-                LeafResult(
-                    line=line,
-                    fen=fen,
-                    centipawns=eval_result.centipawns,
-                    mate_in=eval_result.mate_in,
-                    terminal=eval_result.terminal,
-                    best_move=eval_result.best_move,
-                    principal_variation=eval_result.principal_variation,
-                    wildcard_player_centipawns=wp_cp,
-                    sort_category=sort_cat,
-                    sort_secondary=sort_sec,
-                )
+        # Max-of-worst tie-breaker; ties broken by original (deterministic) order.
+        with_evals.sort(
+            key=lambda item: _worst_intermediate_key(
+                path_evals=item[2], wildcard_player=wildcard_player
+            ),
+            reverse=True,
+        )
+        primary_line, _primary_fens, primary_path_evals = with_evals[0]
+        transpositions: tuple[Transposition, ...] = tuple(
+            Transposition(line=line, path_evals=pe) for line, _, pe in with_evals[1:]
+        )
+
+        leaf_eval: EvaluationResult = eval_cache[leaf_fen]
+        wp_cp: int | None = _wp_centipawns(
+            centipawns=leaf_eval.centipawns, wildcard_player=wildcard_player
+        )
+        sort_cat, sort_sec = _compute_sort_key(
+            terminal=leaf_eval.terminal,
+            mate_in=leaf_eval.mate_in,
+            centipawns=leaf_eval.centipawns,
+            line_length=len(primary_line),
+            wildcard_player=wildcard_player,
+        )
+
+        leaf_results.append(
+            LeafResult(
+                line=primary_line,
+                fen=leaf_fen,
+                centipawns=leaf_eval.centipawns,
+                mate_in=leaf_eval.mate_in,
+                terminal=leaf_eval.terminal,
+                best_move=leaf_eval.best_move,
+                principal_variation=leaf_eval.principal_variation,
+                wildcard_player_centipawns=wp_cp,
+                path_evals=primary_path_evals,
+                transpositions=transpositions,
+                sort_category=sort_cat,
+                sort_secondary=sort_sec,
             )
+        )
 
     leaf_results.sort(key=lambda r: (r.sort_category, r.sort_secondary), reverse=True)
 
     elapsed: float = time.time() - started_at
     if verbosity >= 1:
-        logger.info(f"Evaluated {total_leaves} leaves in {elapsed:.1f}s")
+        total_transpositions: int = sum(len(r.transpositions) for r in leaf_results)
+        logger.info(
+            f"Evaluated {len(unique_fens)} positions in {elapsed:.1f}s; "
+            f"{total_leaves} leaves → {len(leaf_results)} primaries "
+            f"+ {total_transpositions} transpositions"
+        )
 
     return AntivenomResult(
         spec=spec,
@@ -302,6 +489,8 @@ def run_antivenom(
         stockfish_hash_mb=stockfish_hash_mb,
         stockfish_path=resolved_path,
         total_leaves=total_leaves,
+        unique_leaves=len(leaf_results),
+        unique_positions_evaluated=len(unique_fens),
         evaluated_at_unix=started_at,
         elapsed_seconds=elapsed,
         results=tuple(leaf_results),

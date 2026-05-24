@@ -297,6 +297,50 @@ pre.raw {
   color: #4a2f10;
 }
 .viewer-hint { font-size: 11px; color: var(--text-soft); font-style: italic; }
+
+/* Per-ply eval readout (inside viewer, updates as you step plies). */
+.viewer-eval-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.viewer-eval-row .label { letter-spacing: 0.06em; text-transform: uppercase; }
+.viewer-eval-row .viewer-eval { font-size: 14px; font-weight: 600; padding: 1px 6px; border-radius: 3px; }
+
+/* Transposition cycler — only emitted when there's >1 variation. */
+.variations-col { display: flex; flex-direction: column; gap: 8px; }
+.variation-cycler {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 8px;
+  align-self: flex-start;
+}
+.variation-cycler button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 1px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 2px;
+  font-family: inherit;
+}
+.variation-cycler button:hover { background: var(--gold); }
+.variation-cycler button:disabled { opacity: 0.35; cursor: not-allowed; background: transparent; }
+.variation-cycler .variation-label { min-width: 130px; text-align: center; }
+.variations { position: relative; }
+.variation { display: none; }
+.variation.is-current { display: block; }
 """
 
 
@@ -309,9 +353,12 @@ _VIEWER_JS: str = r"""
     if (ply > total - 1) ply = total - 1;
     viewer.dataset.currentPly = String(ply);
     var plies = viewer.querySelectorAll('.viewer-ply');
+    var currentPlyDiv = null;
     for (var i = 0; i < plies.length; i++) {
       var pi = parseInt(plies[i].dataset.ply, 10);
-      plies[i].classList.toggle('is-current', pi === ply);
+      var match = pi === ply;
+      plies[i].classList.toggle('is-current', match);
+      if (match) currentPlyDiv = plies[i];
     }
     var moves = viewer.querySelectorAll('.move-btn');
     for (var j = 0; j < moves.length; j++) {
@@ -329,6 +376,13 @@ _VIEWER_JS: str = r"""
       phase.dataset.phase = isCont ? 'continuation' : 'opening';
       phase.textContent = isCont ? 'Continuation' : 'Opening';
     }
+    var evalSpan = viewer.querySelector('.viewer-eval');
+    if (evalSpan && currentPlyDiv) {
+      var ev = currentPlyDiv.dataset.eval || '—';
+      var cls = currentPlyDiv.dataset.evalCls || 'eval-even';
+      evalSpan.textContent = ev;
+      evalSpan.className = 'viewer-eval eval ' + cls;
+    }
     var prevBtn = viewer.querySelector('[data-action="prev"]');
     var startBtn = viewer.querySelector('[data-action="start"]');
     var nextBtn = viewer.querySelector('[data-action="next"]');
@@ -343,12 +397,63 @@ _VIEWER_JS: str = r"""
     setPly(viewer, parseInt(viewer.dataset.currentPly, 10) + delta);
   }
 
+  function setVariation(solution, idx) {
+    var variations = solution.querySelectorAll(':scope .variations > .variation');
+    var n = variations.length;
+    if (idx < 0) idx = 0;
+    if (idx > n - 1) idx = n - 1;
+    solution.dataset.currentVariation = String(idx);
+    var active = null;
+    for (var i = 0; i < variations.length; i++) {
+      var match = i === idx;
+      variations[i].classList.toggle('is-current', match);
+      if (match) active = variations[i];
+    }
+    // Update the head line text + lichess link to match the active variation.
+    if (active) {
+      var headLine = solution.querySelector('[data-role="head-line"]');
+      if (headLine && active.dataset.variationLine) {
+        headLine.textContent = active.dataset.variationLine;
+      }
+      var lichessAnchor = solution.querySelector('[data-role="lichess-link"]');
+      if (lichessAnchor && active.dataset.variationLichess) {
+        lichessAnchor.setAttribute('href', active.dataset.variationLichess);
+      }
+    }
+    var label = solution.querySelector('.variation-label');
+    if (label) {
+      var name = (active && active.dataset.variationLabel) || ('Variation ' + (idx + 1));
+      label.textContent = name + ' (' + (idx + 1) + ' of ' + n + ')';
+    }
+    var prevBtn = solution.querySelector('[data-action="var-prev"]');
+    var nextBtn = solution.querySelector('[data-action="var-next"]');
+    if (prevBtn) prevBtn.disabled = idx === 0;
+    if (nextBtn) nextBtn.disabled = idx === n - 1;
+    // Snap the newly-active viewer back to its default ply so the user sees the
+    // leaf position when they cycle in.
+    if (active) {
+      var v = active.querySelector('.viewer');
+      if (v) setPly(v, parseInt(v.dataset.currentPly, 10));
+    }
+  }
+
+  function stepVariation(solution, delta) {
+    setVariation(solution, parseInt(solution.dataset.currentVariation, 10) + delta);
+  }
+
   document.addEventListener('click', function (e) {
     var t = e.target.closest('button');
     if (!t) return;
+    var action = t.dataset.action;
+    // Variation cycler buttons live on the .solution wrapper, not the viewer.
+    if (action === 'var-prev' || action === 'var-next') {
+      var solution = t.closest('.solution');
+      if (!solution) return;
+      stepVariation(solution, action === 'var-prev' ? -1 : 1);
+      return;
+    }
     var viewer = t.closest('.viewer');
     if (!viewer) return;
-    var action = t.dataset.action;
     if (action === 'start') setPly(viewer, 0);
     else if (action === 'prev') step(viewer, -1);
     else if (action === 'next') step(viewer, 1);
@@ -364,8 +469,9 @@ _VIEWER_JS: str = r"""
     var active = document.activeElement;
     if (active) viewer = active.closest('.viewer');
     if (!viewer) {
-      var open = document.querySelectorAll('details[open] .viewer');
-      if (open.length) viewer = open[0];
+      // Prefer the visible viewer inside the currently-active variation.
+      var openVariation = document.querySelector('details[open] .variation.is-current .viewer');
+      if (openVariation) viewer = openVariation;
     }
     if (!viewer) return;
     if (e.key === 'ArrowLeft') { step(viewer, -1); e.preventDefault(); }
@@ -377,6 +483,10 @@ _VIEWER_JS: str = r"""
   // Initialise each viewer to its starting ply (the value rendered in data-current-ply).
   document.querySelectorAll('.viewer').forEach(function (v) {
     setPly(v, parseInt(v.dataset.currentPly, 10));
+  });
+  // Initialise each solution with multiple variations to its default variation.
+  document.querySelectorAll('.solution[data-variation-count]').forEach(function (s) {
+    setVariation(s, parseInt(s.dataset.currentVariation || '0', 10));
   });
 })();
 """
@@ -599,17 +709,47 @@ def _run_stats_card(*, meta: dict[str, Any], stats: dict[str, Any]) -> str:
             return "n/a"
         return format(v, fmt)
 
+    # Totals from the run meta — may be absent on older/synthetic fixtures, so guard.
+    total_enumerated: int | None = meta.get("total_leaves")
+    unique_leaves: int | None = meta.get("unique_leaves")
+    unique_positions: int | None = meta.get("unique_positions_evaluated")
     rows: list[tuple[str, str]] = [
-        ("Total leaves", str(total)),
-        ("Leaves with cp eval", str(cp["count_with_cp"])),
-        ("Best (for WP)", _fmt_cp(cp["best"])),
-        ("Worst (for WP)", _fmt_cp(cp["worst"])),
-        ("Mean (for WP)", _fmt_cp(cp["mean"]) if cp["mean"] is not None else "n/a"),
-        ("Median (for WP)", _fmt_cp(cp["median"]) if cp["median"] is not None else "n/a"),
-        ("Std dev (cp)", _fmt_num(cp["stdev"]) if cp["stdev"] is not None else "n/a"),
-        ("Elapsed seconds", f"{elapsed:.2f}"),
-        ("Leaves / sec", f"{(total / elapsed) if elapsed > 0 else 0:.2f}"),
+        ("Primaries (post-dedup)", str(total)),
     ]
+    if total_enumerated is not None and unique_leaves is not None:
+        rows.append(
+            (
+                "Enumerated leaves",
+                f"{total_enumerated} → {unique_leaves} primaries "
+                f"+ {total_enumerated - unique_leaves} transpositions",
+            )
+        )
+    if unique_positions is not None:
+        rows.append(("Unique positions evaluated", str(unique_positions)))
+    rows.extend(
+        [
+            ("Leaves with cp eval", str(cp["count_with_cp"])),
+            ("Best (for WP)", _fmt_cp(cp["best"])),
+            ("Worst (for WP)", _fmt_cp(cp["worst"])),
+            (
+                "Mean (for WP)",
+                _fmt_cp(cp["mean"]) if cp["mean"] is not None else "n/a",
+            ),
+            (
+                "Median (for WP)",
+                _fmt_cp(cp["median"]) if cp["median"] is not None else "n/a",
+            ),
+            (
+                "Std dev (cp)",
+                _fmt_num(cp["stdev"]) if cp["stdev"] is not None else "n/a",
+            ),
+            ("Elapsed seconds", f"{elapsed:.2f}"),
+            (
+                "Positions / sec",
+                f"{(unique_positions / elapsed) if (unique_positions and elapsed > 0) else 0:.2f}",
+            ),
+        ]
+    )
     body_rows: str = "".join(
         f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in rows
     )
@@ -809,6 +949,7 @@ def _interactive_viewer_html(
     viewer_id: str,
     line: list[str],
     continuation: list[str],
+    path_evals: list[dict[str, Any]],
     wildcard_player: str,
     size: int = 280,
 ) -> str:
@@ -820,6 +961,9 @@ def _interactive_viewer_html(
     the position the eval refers to. From there, the user can step forward
     into the engine's principal variation. A small badge labels each ply as
     ``Opening`` or ``Continuation``.
+
+    ``path_evals`` carries per-ply WP-perspective evals for the opening plies
+    (length == len(line) + 1; PV plies have no eval and render as ``—``).
     """
     svgs, n_cont = _replay_line_to_svgs(
         line=line,
@@ -837,10 +981,29 @@ def _interactive_viewer_html(
     opening_plies: int = len(line) + 1
     default_ply: int = len(line)  # leaf position
 
+    # Lookup ply -> (eval_str, eval_class) for the opening plies. PV plies
+    # have no stored eval; we render them as '—'.
+    eval_by_ply: dict[int, tuple[str, str]] = {}
+    for pe in path_evals:
+        ply_idx_pe: int = pe["ply"]
+        eval_by_ply[ply_idx_pe] = (
+            pe.get("evaluation_str") or "—",
+            _eval_class(
+                wp_cp=pe.get("wildcard_player_centipawns"),
+                terminal=pe.get("terminal"),
+                mate_in=pe.get("mate_in"),
+                wp=wildcard_player,
+            ),
+        )
+
     ply_divs: list[str] = []
     for i, svg in enumerate(svgs):
         cls: str = "viewer-ply is-current" if i == default_ply else "viewer-ply"
-        ply_divs.append(f'<div class="{cls}" data-ply="{i}">{svg}</div>')
+        eval_str, eval_cls = eval_by_ply.get(i, ("—", "eval-even"))
+        ply_divs.append(
+            f'<div class="{cls}" data-ply="{i}" '
+            f'data-eval="{escape(eval_str)}" data-eval-cls="{eval_cls}">{svg}</div>'
+        )
 
     # Move list — interleave move numbers with clickable buttons. Opening
     # moves use the default style; continuation (PV) moves get a softer
@@ -870,6 +1033,9 @@ def _interactive_viewer_html(
     phase_initial: str = "continuation" if default_ply >= opening_plies else "opening"
     phase_label: str = "Continuation" if phase_initial == "continuation" else "Opening"
 
+    # Eval row uses the leaf ply's eval initially (matches default_ply).
+    leaf_eval_str, leaf_eval_cls = eval_by_ply.get(default_ply, ("—", "eval-even"))
+
     return f"""
 <div class="viewer" id="{viewer_id}" data-total-plies="{total_plies}" data-opening-plies="{opening_plies}" data-current-ply="{default_ply}" tabindex="0">
   <div class="viewer-boards">{''.join(ply_divs)}</div>
@@ -881,10 +1047,34 @@ def _interactive_viewer_html(
     <button type="button" data-action="end" aria-label="Last ply">▶|</button>
     <span class="viewer-phase" data-phase="{phase_initial}">{phase_label}</span>
   </div>
+  <div class="viewer-eval-row">
+    <span class="label">Eval (WP):</span>
+    <span class="viewer-eval eval {leaf_eval_cls}">{escape(leaf_eval_str)}</span>
+  </div>
   <div class="viewer-moves">{move_list}</div>
   <p class="viewer-hint">click a move or use ← → ↖ ↘ (Home/End) when focused</p>
 </div>
 """
+
+
+def _build_variation_list(*, r: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten a primary + its transpositions into a uniform variation list."""
+    variations: list[dict[str, Any]] = [
+        {
+            "line": list(r["line"]),
+            "path_evals": list(r.get("path_evals") or []),
+            "label": "Primary",
+        }
+    ]
+    for i, t in enumerate(r.get("transpositions") or [], start=1):
+        variations.append(
+            {
+                "line": list(t["line"]),
+                "path_evals": list(t.get("path_evals") or []),
+                "label": f"Transposition {i}",
+            }
+        )
+    return variations
 
 
 def _solution_block(
@@ -895,12 +1085,16 @@ def _solution_block(
     include_svg: bool,
     interactive: bool = False,
 ) -> str:
-    """Render one solution.
+    """Render one solution (a primary leaf, with any transpositions folded in).
 
     When ``interactive`` is True the static SVG is replaced with a full
-    per-ply viewer (move list + nav buttons). When ``include_svg`` is True
-    but ``interactive`` is False, a single static SVG of the leaf position
-    is shown. When both are False, only text / FEN / lichess link.
+    per-ply viewer (move list + nav buttons) for the primary; if there are
+    transpositions, a small cycler is rendered above the viewers so the user
+    can flip through alternate move orders that reach the same leaf FEN.
+
+    When ``include_svg`` is True but ``interactive`` is False, a single
+    static SVG of the leaf position is shown. When both are False, only
+    text / FEN / lichess link.
     """
     rank: int = r["rank"]
     line: list[str] = r["line"]
@@ -920,6 +1114,7 @@ def _solution_block(
     terminal: str | None = r["terminal"]
     mate_in: int | None = r["mate_in"]
     best_move: str = r["best_move"] or "—"
+    transpositions: list[dict[str, Any]] = list(r.get("transpositions") or [])
 
     extra_rows: list[tuple[str, str]] = [
         ("FEN", fen),
@@ -929,20 +1124,56 @@ def _solution_block(
         ("Terminal", terminal or "—"),
         ("Best move from leaf", best_move),
         ("Line length", str(len(line))),
+        ("Transpositions", str(len(transpositions))),
     ]
     kv_html: str = "".join(
         f"<dt>{escape(k)}</dt><dd>{escape(v)}</dd>" for k, v in extra_rows
     )
 
+    variations: list[dict[str, Any]] = _build_variation_list(r=r)
+    n_variations: int = len(variations)
+
     board_html: str = ""
     if interactive:
-        viewer_id: str = f"viewer-{rank}"
-        board_html = _interactive_viewer_html(
-            viewer_id=viewer_id,
-            line=line,
-            continuation=pv,
-            wildcard_player=wildcard_player,
-        )
+        variation_divs: list[str] = []
+        for var_idx, var in enumerate(variations):
+            viewer_id: str = f"viewer-{rank}-{var_idx}"
+            viewer_html: str = _interactive_viewer_html(
+                viewer_id=viewer_id,
+                line=var["line"],
+                continuation=pv,
+                path_evals=var["path_evals"],
+                wildcard_player=wildcard_player,
+            )
+            var_line_pgn: str = _line_to_pgn(line=var["line"])
+            var_lichess: str = _lichess_link(
+                line=var["line"], wildcard_player=wildcard_player
+            )
+            current_cls: str = "variation is-current" if var_idx == 0 else "variation"
+            variation_divs.append(
+                f'<div class="{current_cls}" '
+                f'data-variation-index="{var_idx}" '
+                f'data-variation-label="{escape(var["label"])}" '
+                f'data-variation-line="{escape(var_line_pgn)}" '
+                f'data-variation-lichess="{escape(var_lichess)}">'
+                f'{viewer_html}'
+                f"</div>"
+            )
+
+        cycler_html: str = ""
+        if n_variations > 1:
+            cycler_html = f"""
+<div class="variation-cycler">
+  <button type="button" data-action="var-prev" aria-label="Previous variation">◂</button>
+  <span class="variation-label">Primary (1 of {n_variations})</span>
+  <button type="button" data-action="var-next" aria-label="Next variation">▸</button>
+</div>"""
+
+        board_html = f"""
+<div class="variations-col">
+  {cycler_html}
+  <div class="variations">{''.join(variation_divs)}</div>
+</div>"""
     elif include_svg:
         board: chess.Board = chess.Board(fen)
         flipped: bool = wildcard_player == "black"
@@ -955,14 +1186,30 @@ def _solution_block(
         )
 
     lichess: str = _lichess_link(line=line, wildcard_player=wildcard_player)
-
-    classes: str = "solution solution-top" if is_top else "solution"
     head_line_pgn: str = _line_to_pgn(line=line)
+    classes: str = "solution solution-top" if is_top else "solution"
+    solution_attrs: str = ""
+    if n_variations > 1 and interactive:
+        solution_attrs = (
+            f' data-variation-count="{n_variations}" data-current-variation="0"'
+        )
+
+    # When non-interactive but transpositions exist, list them as plain text.
+    transposition_note: str = ""
+    if not interactive and transpositions:
+        trans_pgns: list[str] = [
+            escape(_line_to_pgn(line=list(t["line"]))) for t in transpositions
+        ]
+        transposition_note = (
+            f'<p class="note"><strong>Transpositions ({len(transpositions)}):</strong> '
+            + "; ".join(trans_pgns)
+            + "</p>"
+        )
 
     body: str = f"""
 <div class="head">
   <div class="rank">#{rank}</div>
-  <div class="line">{escape(head_line_pgn)}</div>
+  <div class="line" data-role="head-line">{escape(head_line_pgn)}</div>
   <div class="eval {eval_cls}">{escape(eval_str)}</div>
 </div>
 <div class="board-row">
@@ -970,11 +1217,12 @@ def _solution_block(
   <div class="meta-block">
     <dl class="kv">{kv_html}</dl>
     <p class="pv"><strong>PV from leaf:</strong> {escape(pv_str)}</p>
-    <p class="note"><a href="{escape(lichess)}" target="_blank" rel="noopener">Open in lichess analysis ↗</a></p>
+    <p class="note"><a data-role="lichess-link" href="{escape(lichess)}" target="_blank" rel="noopener">Open in lichess analysis ↗</a></p>
+    {transposition_note}
   </div>
 </div>
 """
-    return f'<div class="{classes}">{body}</div>'
+    return f'<div class="{classes}"{solution_attrs}>{body}</div>'
 
 
 def _top_solutions_card(

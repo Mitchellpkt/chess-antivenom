@@ -253,6 +253,73 @@ class TestIterLeaves:
         assert fen == chess.STARTING_FEN
 
 
+class TestIterLeafPaths:
+    """Tests for iter_leaf_paths() — yields (line, path_fens) for every leaf."""
+
+    def test_path_fens_length_is_line_length_plus_one(self):
+        tree = expand_wildcards("1. e4 e5 2. Nf3")
+
+        leaf_paths = list(tree.iter_leaf_paths())
+        assert len(leaf_paths) == 1
+        line, path_fens = leaf_paths[0]
+        assert line == ("e4", "e5", "Nf3")
+        # path_fens: root + after-e4 + after-e5 + after-Nf3 = 4 entries.
+        assert len(path_fens) == 4
+        assert path_fens[0] == chess.STARTING_FEN
+
+    def test_path_fens_match_iter_leaves_for_leaf(self):
+        """The last element of path_fens equals the leaf FEN reported by iter_leaves."""
+        tree = expand_wildcards("1. e4 __ 2. Nc3")
+
+        from_iter_leaves = list(tree.iter_leaves())
+        from_iter_leaf_paths = list(tree.iter_leaf_paths())
+        assert len(from_iter_leaves) == len(from_iter_leaf_paths)
+        for (line_a, fen_a), (line_b, path_fens) in zip(
+            from_iter_leaves, from_iter_leaf_paths
+        ):
+            assert line_a == line_b
+            assert fen_a == path_fens[-1]
+
+    def test_intermediate_fens_match_intermediate_positions(self):
+        """For a single concrete line, path_fens[k] equals the actual board FEN
+        after replaying the first k SAN moves."""
+        tree = expand_wildcards("1. e4 c5 2. Nf3")
+        _, path_fens = next(iter(tree.iter_leaf_paths()))
+        board = chess.Board()
+        assert path_fens[0] == board.fen()
+        board.push_san("e4")
+        assert path_fens[1] == board.fen()
+        board.push_san("c5")
+        assert path_fens[2] == board.fen()
+
+
+class TestUniqueFens:
+    """Tests for unique_fens() — dedup of every FEN reachable in the tree."""
+
+    def test_no_wildcards_has_one_fen_per_ply(self):
+        """A no-wildcard 3-ply spec has 4 unique fens (root + 3 ply positions)."""
+        tree = expand_wildcards("1. e4 e5 2. Nf3")
+        assert len(tree.unique_fens()) == 4
+
+    def test_transposition_deduplicates(self):
+        """1. __ f6 2. __ c6 — two move orders for white can reach the same FEN
+        (e.g. Nf3-then-Nc3 vs Nc3-then-Nf3 after the two black moves). The
+        leaf-FEN count must be strictly less than the total enumerated leaves
+        whenever transpositions exist on this spec."""
+        tree = expand_wildcards("1. __ f6 2. __ c6")
+        leaves = list(tree.iter_leaves())
+        leaf_fens = {fen for _, fen in leaves}
+        # There WILL be some transpositions among white's two-move orders.
+        assert len(leaf_fens) < len(leaves), (
+            f"Expected transpositions, but {len(leaves)} leaves had "
+            f"{len(leaf_fens)} unique FENs"
+        )
+        # unique_fens is the superset of leaf fens (also includes root + intermediates).
+        all_unique = set(tree.unique_fens())
+        assert leaf_fens.issubset(all_unique)
+        assert chess.STARTING_FEN in all_unique
+
+
 class TestTerminalPruning:
     """Tree expansion must stop at game-over positions."""
 
