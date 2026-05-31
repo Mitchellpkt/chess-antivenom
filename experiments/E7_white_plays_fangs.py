@@ -17,11 +17,11 @@ from src.v0.runner import ExperimentConfig, run_experiment
 
 _REPO: Path = Path(__file__).resolve().parent.parent
 
-config_tag: str = "E6_white_plays_fangs"
+config_tag: str = "E7_black_plays_fangs"
 
 config: ExperimentConfig = ExperimentConfig(
     experiment_tag=config_tag,
-    input_path=_REPO / "inputs" / "format_0" / "white_plays_fangs.pgn",
+    input_path=_REPO / "inputs" / "format_0" / "black_plays_fangs.pgn",
     output_dir=_REPO / "outputs" / config_tag,
     num_solutions=20,
     engine_depth=20,
